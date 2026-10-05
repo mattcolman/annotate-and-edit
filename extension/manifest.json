@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Annotate & Edit",
+  "version": "0.1.0",
+  "description": "Annotate any website and edit its text live, then copy a structured prompt for your AI coding agent. Free, no accounts.",
+  "permissions": ["storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Toggle Annotate & Edit toolbar",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "toggle-toolbar": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Period",
+        "mac": "Command+Shift+Period"
+      },
+      "description": "Show or hide the Annotate & Edit toolbar"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*.png"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

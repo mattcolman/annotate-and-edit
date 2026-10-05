@@ -1,0 +1,35 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: Georgia, serif; color: #222;
+  background: #faf7f2;
+}
+header {
+  padding: 24px 40px; display: flex; justify-content: space-between;
+  align-items: center; border-bottom: 1px solid #e5ddd0;
+}
+.logo { font-weight: 700; font-size: 20px; }
+.logo a { color: inherit; text-decoration: none; }
+nav a { margin-left: 24px; color: #555; text-decoration: none; }
+nav a:hover { color: #222; text-decoration: underline; }
+main { max-width: 760px; margin: 0 auto; padding: 60px 40px; }
+h1 { font-size: 44px; line-height: 1.15; margin: 0 0 20px; }
+.lede { font-size: 19px; color: #555; margin-bottom: 32px; }
+.cta {
+  display: inline-block; background: #222; color: #fff; border: none;
+  padding: 14px 28px; font-size: 16px; border-radius: 8px; cursor: pointer;
+  text-decoration: none;
+}
+section { margin-top: 64px; }
+h2 { font-size: 28px; margin-bottom: 12px; }
+ul { padding-left: 22px; line-height: 1.9; }
+footer {
+  border-top: 1px solid #e5ddd0; padding: 24px 40px; color: #888;
+  font-size: 14px; margin-top: 80px;
+}
+.project { border-top: 1px solid #e5ddd0; padding: 24px 0; }
+.project h3 { margin: 0 0 8px; }
+form label { display: block; margin: 18px 0 6px; }
+form input, form textarea {
+  width: 100%; padding: 10px; font: inherit; border: 1px solid #d8cfc0;
+  border-radius: 6px; background: #fff;
+}

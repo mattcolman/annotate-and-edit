@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Annotate &amp; Edit — promo tile</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 440px; height: 280px; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background:
+      radial-gradient(340px 200px at 50% 30%, rgba(79,124,255,.28), transparent 70%),
+      linear-gradient(165deg, #1d2129 0%, #12151b 100%);
+    color: #e8eaf0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+  }
+  .logo {
+    width: 86px; height: 86px;
+    filter: drop-shadow(0 10px 26px rgba(79,124,255,.45));
+    margin-bottom: 14px;
+  }
+  h1 {
+    font-size: 30px; font-weight: 700; letter-spacing: -0.01em;
+    margin-bottom: 8px;
+  }
+  h1 .amp { color: #4f7cff; }
+  .tag {
+    font-size: 14px; color: #9aa3b2; margin-bottom: 14px;
+    letter-spacing: .01em;
+  }
+  .pills { display: flex; gap: 7px; }
+  .pill {
+    font-size: 11.5px; font-weight: 600; letter-spacing: .03em;
+    color: #b8c3d9; border: 1px solid #2e3340; border-radius: 999px;
+    padding: 4px 11px; background: rgba(31,35,43,.7);
+  }
+  .pill.amber { color: #f5a524; border-color: rgba(245,165,36,.35); }
+</style>
+</head>
+<body>
+  <img class="logo" src="../extension/icons/icon128.png" alt="">
+  <h1>Annotate <span class="amp">&amp;</span> Edit</h1>
+  <div class="tag">Pin notes. Edit text live. Copy it all for your AI agent.</div>
+  <div class="pills">
+    <span class="pill">Free forever</span>
+    <span class="pill">No account</span>
+    <span class="pill amber">No data leaves your browser</span>
+  </div>
+</body>
+</html>
