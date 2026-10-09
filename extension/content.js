@@ -225,7 +225,36 @@
   .btn:hover { border-color: #475069; }
   .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn.on.amber { background: var(--amber); border-color: var(--amber); color: #17191f; }
+  /* Attention pop when a mode activates (click or hotkey) — scales up and
+     sheds a fading ring. Only on the mode buttons, not the marks toggle. */
+  @keyframes aeBtnPop {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.14); }
+    100% { transform: scale(1); }
+  }
+  @keyframes aeBtnRing {
+    from { box-shadow: 0 0 0 0 var(--ring, rgba(79,124,255,.55)); }
+    to { box-shadow: 0 0 0 14px transparent; }
+  }
+  [data-act="annotate"].on, [data-act="edit"].on {
+    animation: aeBtnPop .28s cubic-bezier(.34,1.4,.5,1), aeBtnRing .45s ease-out;
+  }
+  [data-act="edit"].on { --ring: rgba(245,165,36,.55); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* keycap-style shortcut hint inside mode buttons */
+  .btn .key {
+    font-size: 10px; font-weight: 700; line-height: 1; padding: 4px 5px 2px;
+    border-radius: 4px; border: 1px solid var(--border); border-bottom-width: 2px;
+    background: var(--bg2, #1e222b); color: var(--dim); text-transform: uppercase;
+  }
+  .btn.on .key {
+    color: #fff; background: rgba(255,255,255,.16);
+    border-color: rgba(255,255,255,.4); border-bottom-color: rgba(255,255,255,.55);
+  }
+  .btn.on.amber .key {
+    color: #17191f; background: rgba(0,0,0,.1);
+    border-color: rgba(0,0,0,.3); border-bottom-color: rgba(0,0,0,.4);
+  }
   .btn.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
   .btn.locked { opacity: .45; cursor: not-allowed; }
   .btn.copied { background: var(--ok); border-color: var(--ok); color: #fff; transition: background .15s; }
@@ -441,8 +470,8 @@
   </aside>
   <div id="toolbar">
     <img class="logo" src="${chrome.runtime.getURL("icons/icon48.png")}" alt="Annotate &amp; Edit" title="Annotate &amp; Edit">
-    <button class="btn" data-act="annotate" title="Click elements to pin notes (a)">Annotate</button>
-    <button class="btn" data-act="edit" title="Click text to rewrite it (e)">Edit</button>
+    <button class="btn" data-act="annotate" title="Click elements to pin notes — press a to toggle, Esc to exit">Annotate <span class="key">a</span></button>
+    <button class="btn" data-act="edit" title="Click text to rewrite it — press e to toggle, Esc to exit">Edit <span class="key">e</span></button>
     <button class="btn icon" data-act="marks" title="Hide note and edit markers">
       <svg id="eye-on" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
         <path d="M1.5 8s2.4-4.6 6.5-4.6S14.5 8 14.5 8s-2.4 4.6-6.5 4.6S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2.1"/>

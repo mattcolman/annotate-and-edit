@@ -280,6 +280,10 @@ try {
     "hotkey a enables annotate",
     await evalJs(`${SHADOW}.querySelector('[data-act="annotate"]').classList.contains('on')`),
   );
+  check(
+    "mode button animates on toggle",
+    (await evalJs(`getComputedStyle(${SHADOW}.querySelector('[data-act="annotate"]')).animationName`)).includes("aeBtnPop"),
+  );
   await evalJs(key("e"));
   await sleep(100);
   check(
