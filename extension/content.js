@@ -15,6 +15,8 @@
 (() => {
   if (window.__annotateEditLoaded) return;
   window.__annotateEditLoaded = true;
+  // Content scripts also run on XML feeds/SVG docs — no DOM to annotate there.
+  if (!(document instanceof HTMLDocument)) return;
 
   const HOST_TAG = "annotate-edit";
   const STORE_PREFIX = "ae:";
@@ -132,7 +134,7 @@
 
   // ------------------------------------------------------------------ state
 
-  let site = { v: 1, pages: {} };
+  let site = { v: 1, pages: {}, reviews: [], nextReview: 1, copied: false };
   let mode = "off"; // 'off' | 'annotate' | 'edit'
   // Off by default — the icon click / keyboard shortcut turns it on, and the
   // state persists per tab so a review session survives navigation + reloads.
@@ -153,6 +155,12 @@
       const r = await chrome.storage.local.get(storeKey());
       const v = r[storeKey()];
       if (v && v.pages) site = v;
+      // Older data predates review history.
+      site.reviews ??= [];
+      site.nextReview ??= site.reviews.length
+        ? site.reviews[site.reviews.length - 1].n + 1
+        : 1;
+      site.copied ??= false;
     } catch {
       /* private mode etc. — session-only data */
     }
@@ -218,6 +226,8 @@
   .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn.on.amber { background: var(--amber); border-color: var(--amber); color: #17191f; }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .btn.locked { opacity: .45; cursor: not-allowed; }
   .btn.copied { background: var(--ok); border-color: var(--ok); color: #fff; transition: background .15s; }
   .btn.danger { color: #ff8589; }
   .btn.small { padding: 3px 8px; font-size: 12px; }
@@ -313,8 +323,27 @@
     padding: 12px 14px; border-bottom: 1px solid var(--border);
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
   }
+  #panel header > div:first-child { min-width: 0; flex: 1; }
   #panel header b { font-size: 13px; }
-  #panel .sub { font-size: 11px; color: var(--dim); }
+  #panel .sub { font-size: 11px; color: var(--dim); overflow-wrap: anywhere; }
+  #panel .tally {
+    display: flex; align-items: center; gap: 4px; margin-top: 3px;
+    font-size: 11px; font-weight: 600; color: var(--ok);
+  }
+  #panel .hbtns { display: flex; gap: 6px; flex-shrink: 0; }
+  #panel details.rev summary {
+    cursor: pointer; display: flex; align-items: center; gap: 8px;
+    list-style: none;
+  }
+  #panel details.rev summary::-webkit-details-marker { display: none; }
+  #panel details.rev summary::before {
+    content: "▸"; color: var(--dim); font-size: 10px; transition: transform .12s;
+  }
+  #panel details.rev[open] summary::before { transform: rotate(90deg); }
+  #panel details.rev[open] summary { margin-bottom: 8px; }
+  #panel .revitem { font-size: 12px; color: var(--dim); padding: 4px 0; border-top: 1px solid var(--border); }
+  #panel .revitem b { color: var(--text); font-weight: 600; }
+  #panel .revsum { font-size: 12px; color: var(--dim); margin-bottom: 10px; }
   #panel-body { flex: 1; overflow-y: auto; padding: 10px 14px 20px; }
   #panel-body h4 {
     margin: 14px 0 6px; font-size: 11px; color: var(--dim);
@@ -341,6 +370,7 @@
   }
   #panel footer .full { flex: 1 1 100%; }
   #panel footer .grow { flex: 1; }
+
   .empty { color: var(--dim); font-size: 12px; padding: 8px 0; }
 
   /* -------- toast -------- */
@@ -380,12 +410,19 @@
       <div>
         <b>Annotate &amp; Edit</b>
         <div class="sub" id="panel-sub"></div>
+        <div class="tally" id="tally" style="display:none">
+          <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5l3.5 3.5 7.5-8"/></svg>
+          <span id="tally-n"></span>
+        </div>
       </div>
-      <button class="btn small" data-act="panel-close">Close</button>
+      <div class="hbtns">
+        <button class="btn small" data-act="history" id="hist-btn">History</button>
+        <button class="btn small" data-act="panel-close">Close</button>
+      </div>
     </header>
     <div id="panel-body"></div>
     <footer>
-      <button class="btn primary full" data-act="copy" title="Copy all notes and edits as a prompt for your coding agent">
+      <button class="btn primary full" data-act="copy" title="Copy all notes for a coding agent. Either paste them directly into your coding agent's chat, or send them to the web developer you're working with">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <rect x="5.3" y="5.3" width="9.3" height="9.3" rx="1.4"/>
           <path d="M2.7 10.7c-.7 0-1.4-.6-1.4-1.4V2.7c0-.7.6-1.4 1.4-1.4h6.6c.8 0 1.4.6 1.4 1.4"/>
@@ -393,14 +430,19 @@
         </svg>
         Copy for agent
       </button>
-      <button class="btn grow" data-act="clear-page">Clear page</button>
-      <button class="btn danger grow" data-act="clear-all">Clear site</button>
+      <button class="btn danger grow" data-act="clear-all" title="Discard all notes and edits (past reviews are kept)">Clear all</button>
+      <button class="btn ok grow locked" data-act="complete-review" title="Copy for agent first — nothing is copied yet">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 3v10M3 8h10"/>
+        </svg>
+        New review
+      </button>
     </footer>
   </aside>
   <div id="toolbar">
     <img class="logo" src="${chrome.runtime.getURL("icons/icon48.png")}" alt="Annotate &amp; Edit" title="Annotate &amp; Edit">
-    <button class="btn" data-act="annotate" title="Click elements to pin notes">Annotate</button>
-    <button class="btn" data-act="edit" title="Click text to rewrite it">Edit</button>
+    <button class="btn" data-act="annotate" title="Click elements to pin notes (a)">Annotate</button>
+    <button class="btn" data-act="edit" title="Click text to rewrite it (e)">Edit</button>
     <button class="btn icon" data-act="marks" title="Hide note and edit markers">
       <svg id="eye-on" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
         <path d="M1.5 8s2.4-4.6 6.5-4.6S14.5 8 14.5 8s-2.4 4.6-6.5 4.6S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2.1"/>
@@ -605,6 +647,7 @@
         createdAt: new Date().toISOString(),
       });
     }
+    site.copied = false;
     save();
     renderAll();
   }
@@ -728,6 +771,7 @@
       viewport: innerWidth,
       createdAt: new Date().toISOString(),
     });
+    site.copied = false;
     teardownEdit(false);
     save();
     renderAll();
@@ -745,6 +789,7 @@
       }
     }
     data.edits = data.edits.filter((e) => e.id !== id);
+    site.copied = false;
     closeViewPopup();
     save();
     renderAll();
@@ -848,18 +893,33 @@
   /** While picking, swallow page clicks so links/buttons don't fire. */
   function onMouseBlock(e) {
     if (mode === "off" || inUI(e)) return;
-    if (activeEdit && activeEdit.el.contains(e.target)) return;
+    if (activeEdit && activeEdit.el.contains(e.target)) {
+      // mousedown/up must pass through for caret placement, but middle-click
+      // on a link still opens it — block auxclick during an edit.
+      if (e.type === "auxclick") block(e);
+      return;
+    }
     block(e);
   }
 
   function onClickCapture(e) {
     if (mode === "off") return;
     if (inUI(e)) {
-      if (activeEdit) commitEdit();
+      const actBtn = e.composedPath().find(
+        (n) => n instanceof HTMLElement && n.dataset?.act,
+      );
+      // Clicking UI commits an in-progress edit — except Cancel, whose own
+      // handler restores the original text.
+      if (activeEdit && actBtn?.dataset.act !== "edit-cancel") commitEdit();
       return;
     }
     if (activeEdit) {
-      if (activeEdit.el.contains(e.target)) return; // caret placement
+      if (activeEdit.el.contains(e.target)) {
+        // Caret placement already happened on mousedown — swallow the click
+        // so links/handlers inside the editable element can't navigate away.
+        block(e);
+        return;
+      }
       block(e);
       commitEdit();
       return;
@@ -898,13 +958,77 @@
       }
       return;
     }
+    // Mode hotkeys: a = annotate, e = edit (press again to switch off, Esc too).
+    // Plain keys only, and never while typing into a field or editable element.
+    if (toolbarVisible && !e.metaKey && !e.ctrlKey && !e.altKey &&
+        (e.key === "a" || e.key === "e")) {
+      const t = e.target;
+      const typing =
+        t instanceof HTMLElement &&
+        (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName));
+      if (!typing) {
+        block(e);
+        setMode(e.key === "a" ? "annotate" : "edit");
+        return;
+      }
+    }
     if (mode !== "off") block(e);
   }
 
   // ------------------------------------------------------------------ panel
 
+  let panelView = "current"; // "current" | "history"
+
+  function renderHistory() {
+    const body = $("#panel-body");
+    const reviews = site.reviews || [];
+    const total = reviews.reduce(
+      (s, r) => s + r.notes.length + r.edits.length,
+      0,
+    );
+    $("#panel-sub").textContent =
+      `${location.host} — ${reviews.length} completed reviews, ${total} changes`;
+    if (!reviews.length) {
+      body.innerHTML = `<div class="empty">No completed reviews yet. Finish one with <b>Complete review</b>.</div>`;
+      return;
+    }
+    const html = [`<div class="revsum">${reviews.length} reviews · ${total} changes completed</div>`];
+    [...reviews].reverse().forEach((r) => {
+      const date = new Date(r.endedAt).toLocaleDateString(undefined, {
+        month: "short", day: "numeric",
+      });
+      html.push(`
+        <details class="item rev">
+          <summary><span class="cat">Review #${r.n}</span><span class="num">${esc(date)}</span></summary>
+          <div class="revitem"><b>${r.notes.length} notes · ${r.edits.length} edits</b></div>
+          ${r.edits
+            .map(
+              (e) =>
+                `<div class="revitem"><b>edit &lt;${esc(e.tag)}&gt;</b> ${esc(e.page || "")} — "${esc((e.newText || "").slice(0, 70))}"</div>`,
+            )
+            .join("")}
+          ${r.notes
+            .map(
+              (n) =>
+                `<div class="revitem"><b>note</b> ${esc(n.page || "")} — "${esc((n.note || "").slice(0, 70))}"</div>`,
+            )
+            .join("")}
+          <div class="actions">
+            <button class="btn small" data-act="review-copy" data-id="${r.id}">Copy for agent</button>
+            <button class="btn small danger" data-act="review-del" data-id="${r.id}">Delete</button>
+          </div>
+        </details>`);
+    });
+    body.innerHTML = html.join("");
+  }
+
   function renderPanel() {
     const body = $("#panel-body");
+    $("#hist-btn").textContent = panelView === "history" ? "Current" : "History";
+    if (panelView === "history") {
+      renderHistory();
+      return;
+    }
     const keys = Object.keys(site.pages).filter(
       (k) => site.pages[k].notes.length || site.pages[k].edits.length,
     );
@@ -916,7 +1040,7 @@
       notes += site.pages[k].notes.length;
       edits += site.pages[k].edits.length;
     });
-    $("#panel-sub").textContent = `${location.host} — ${notes} notes, ${edits} edits`;
+    $("#panel-sub").textContent = `${location.host} — review #${site.nextReview || 1} · ${notes} notes, ${edits} edits`;
     $("#count").textContent = String(notes + edits);
 
     if (!keys.length) {
@@ -945,6 +1069,9 @@
             <div class="head"><span class="cat">${esc(n.category || "note")}</span><span class="num">#${i + 1}</span></div>
             <div class="body">${esc(n.note)}</div>
             <div class="actions">
+              <button class="btn small icon" data-act="note-copy" data-id="${n.id}" data-page="${esc(key)}" title="Copy just this note for your agent">
+                <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.3" y="5.3" width="9.3" height="9.3" rx="1.4"/><path d="M2.7 10.7c-.7 0-1.4-.6-1.4-1.4V2.7c0-.7.6-1.4 1.4-1.4h6.6c.8 0 1.4.6 1.4 1.4"/></svg>
+              </button>
               <button class="btn small" data-act="note-done" data-id="${n.id}" data-page="${esc(key)}">${n.done ? "Reopen" : "Resolve"}</button>
               <button class="btn small danger" data-act="note-del" data-id="${n.id}" data-page="${esc(key)}">Delete</button>
             </div>
@@ -962,30 +1089,52 @@
   }
 
   let confirmClear = null;
-  function clearPage() {
-    if (confirmClear !== "page") {
-      confirmClear = "page";
-      toast("Click Clear page again to confirm");
-      return;
-    }
-    confirmClear = null;
-    delete site.pages[pageKey()];
-    save();
-    renderAll();
-    toast("Cleared this page");
-  }
-
-  function clearSite() {
+  function clearAll() {
     if (confirmClear !== "all") {
       confirmClear = "all";
-      toast("Click Clear site again to confirm");
+      toast("Click Clear all again to confirm");
       return;
     }
     confirmClear = null;
-    site = { v: 1, pages: {} };
+    site.pages = {}; // history survives — only the working set is cleared
+    site.copied = false;
     save();
     renderAll();
-    toast("Cleared all pages on this site");
+    toast("Cleared all notes and edits on this site");
+  }
+
+  function completeReview() {
+    const keys = Object.keys(site.pages).filter(
+      (k) => site.pages[k].notes.length || site.pages[k].edits.length,
+    );
+    if (!keys.length) {
+      toast("Nothing to complete — add notes or edits first");
+      return;
+    }
+    if (!site.copied) {
+      toast("Copy for agent first — your changes aren't copied yet");
+      return;
+    }
+    const review = {
+      id: uid(),
+      n: site.nextReview,
+      endedAt: new Date().toISOString(),
+      notes: [],
+      edits: [],
+    };
+    for (const k of keys) {
+      review.notes.push(...site.pages[k].notes.map((n) => ({ ...n, page: n.page ?? k })));
+      review.edits.push(...site.pages[k].edits.map((e) => ({ ...e, page: e.page ?? k })));
+    }
+    site.reviews.push(review);
+    site.nextReview += 1;
+    site.pages = {};
+    site.copied = false; // fresh review needs a fresh copy
+    save();
+    renderAll();
+    const changes = review.notes.length + review.edits.length;
+    toast(`Review #${review.n} complete — ${changes} changes archived`);
+    confetti(panel.querySelector('[data-act="complete-review"]'));
   }
 
   // ----------------------------------------------------------------- export
@@ -995,20 +1144,42 @@
   }
 
   function renderExport() {
-    const keys = Object.keys(site.pages).filter(
-      (k) => site.pages[k].notes.length || site.pages[k].edits.length,
+    return renderExportFrom(
+      site.pages,
+      `Website review${site.nextReview > 1 ? ` #${site.nextReview}` : ""} — ${location.origin}`,
+      new Date(),
+    );
+  }
+
+  /** Export an archived review the same way — group its items back by page. */
+  function renderReviewExport(review) {
+    const pages = {};
+    for (const n of review.notes)
+      (pages[n.page] ||= { notes: [], edits: [] }).notes.push(n);
+    for (const e of review.edits)
+      (pages[e.page] ||= { notes: [], edits: [] }).edits.push(e);
+    return renderExportFrom(
+      pages,
+      `Website review #${review.n} — ${location.origin}`,
+      new Date(review.endedAt),
+    );
+  }
+
+  function renderExportFrom(pages, heading, when) {
+    const keys = Object.keys(pages).filter(
+      (k) => pages[k].notes.length || pages[k].edits.length,
     );
     let notes = 0;
     let edits = 0;
     keys.forEach((k) => {
-      notes += site.pages[k].notes.filter((n) => !n.done).length;
-      edits += site.pages[k].edits.length;
+      notes += pages[k].notes.filter((n) => !n.done).length;
+      edits += pages[k].edits.length;
     });
 
     const lines = [
-      `# Website review — ${location.origin}`,
+      `# ${heading}`,
       "",
-      `Generated ${new Date().toLocaleString()} — ${edits} text edits, ${notes} annotations.`,
+      `Generated ${when.toLocaleString()} — ${edits} text edits, ${notes} annotations.`,
       "Produced with the Annotate & Edit browser extension. Apply each change to the",
       "codebase that builds this site. Every item is anchored by a CSS selector and",
       "quoted on-screen text — grep for the quoted text if a selector doesn't resolve.",
@@ -1018,7 +1189,7 @@
     if (edits) {
       lines.push("## Text edits", "");
       for (const key of keys.sort()) {
-        const list = site.pages[key].edits;
+        const list = pages[key].edits;
         if (!list.length) continue;
         lines.push(`### Page: ${key}`, "");
         list.forEach((ed, i) => {
@@ -1039,12 +1210,12 @@
       }
     }
 
-    const openKeys = keys.filter((k) => site.pages[k].notes.some((n) => !n.done));
+    const openKeys = keys.filter((k) => pages[k].notes.some((n) => !n.done));
     if (openKeys.length) {
       lines.push("## Annotations", "");
       for (const key of openKeys.sort()) {
         lines.push(`### Page: ${key}`, "");
-        site.pages[key].notes.forEach((n, i) => {
+        pages[key].notes.forEach((n, i) => {
           if (n.done) return;
           const [first, ...rest] = clean(n.note).split("\n");
           lines.push(`${i + 1}. ${n.category ? `**${n.category}** — ` : ""}${first}`, "");
@@ -1063,7 +1234,7 @@
     }
 
     const done = keys.flatMap((k) =>
-      site.pages[k].notes.filter((n) => n.done).map((n) => ({ ...n, page: k })),
+      pages[k].notes.filter((n) => n.done).map((n) => ({ ...n, page: k })),
     );
     if (done.length) {
       lines.push("---", "", "## Resolved (no action needed)", "");
@@ -1076,8 +1247,29 @@
     return lines.join("\n");
   }
 
-  async function copyAll() {
-    const md = renderExport();
+  /** Copy a single annotation as the same markdown block the full export uses. */
+  async function copyNote(id, key = pageKey()) {
+    const n = byId(pageData(key).notes, id);
+    if (!n) return;
+    const [first, ...rest] = clean(n.note).split("\n");
+    const lines = [`### Annotation — ${key}`, "", first];
+    const body = rest.join("\n").trim();
+    if (body) lines.push("", body);
+    lines.push(
+      "",
+      `- **Element:** \`<${n.tag}>\`${n.text ? ` "${clean(n.text).slice(0, 120)}"` : ""}`,
+      `- **Selector:** \`${n.selector}\``,
+    );
+    const ctx = [];
+    if (n.prevText) ctx.push(`after "${clean(n.prevText).slice(0, 80)}"`);
+    if (n.nextText) ctx.push(`before "${clean(n.nextText).slice(0, 80)}"`);
+    if (ctx.length) lines.push(`- **Context:** ${ctx.join(", ")}`);
+    if (n.viewport) lines.push(`- **Seen at:** ${n.viewport}px wide`);
+    await writeClipboard(lines.join("\n"));
+    toast("Note copied");
+  }
+
+  async function writeClipboard(md) {
     try {
       await navigator.clipboard.writeText(md);
     } catch {
@@ -1091,6 +1283,78 @@
       } catch {}
       ta.remove();
     }
+  }
+
+  function syncFooter() {
+    const copy = panel.querySelector('[data-act="copy"]');
+    const done = panel.querySelector('[data-act="complete-review"]');
+    const empty = !Object.values(site.pages).some(
+      (p) => p.notes.length || p.edits.length,
+    );
+    copy.classList.toggle("locked", empty);
+    copy.title = empty
+      ? "Nothing to copy yet — add notes or edits first"
+      : "Copy all notes for a coding agent. Either paste them directly into your coding agent's chat, or send them to the web developer you're working with";
+    const locked = !site.copied;
+    done.classList.toggle("locked", locked);
+    done.title = locked
+      ? "Copy for agent first — nothing is copied yet"
+      : "Archive this review and start a new one";
+  }
+
+  /** Confetti burst from a spot on screen (e.g. the complete button). */
+  function confetti(fromEl) {
+    const r = fromEl.getBoundingClientRect();
+    const ox = r.left + r.width / 2;
+    const oy = r.top + r.height / 2;
+    const colors = ["#4f7cff", "#f5a524", "#30a46c", "#e8eaf0", "#ff8589"];
+    const wrap = document.createElement("div");
+    wrap.style.cssText =
+      "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
+    for (let i = 0; i < 30; i++) {
+      const p = document.createElement("i");
+      const s = 4 + Math.random() * 6;
+      p.style.cssText =
+        `position:fixed;left:${ox}px;top:${oy}px;width:${s}px;height:${s}px;` +
+        `background:${colors[i % colors.length]};` +
+        `border-radius:${Math.random() > 0.5 ? "50%" : "2px"}`;
+      wrap.appendChild(p);
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 55 + Math.random() * 130;
+      const dx = Math.cos(ang) * dist;
+      const dy = Math.sin(ang) * dist - 60; // bias upward
+      p.animate(
+        [
+          { transform: "translate(0,0) rotate(0deg)", opacity: 1 },
+          {
+            transform: `translate(${dx}px,${dy + 90}px) rotate(${(Math.random() - 0.5) * 540}deg)`,
+            opacity: 0,
+          },
+        ],
+        {
+          duration: 750 + Math.random() * 550,
+          easing: "cubic-bezier(.2,.7,.3,1)",
+          fill: "forwards",
+        },
+      );
+    }
+    shadow.appendChild(wrap);
+    setTimeout(() => wrap.remove(), 1500);
+  }
+
+  async function copyAll() {
+    const empty = !Object.values(site.pages).some(
+      (p) => p.notes.length || p.edits.length,
+    );
+    if (empty) {
+      toast("Nothing to copy yet — add notes or edits first");
+      return;
+    }
+    const md = renderExport();
+    await writeClipboard(md);
+    site.copied = true;
+    save();
+    syncFooter();
     const btn = shadow.querySelector('[data-act="copy"]');
     if (btn && !btn.classList.contains("copied")) {
       const orig = btn.innerHTML;
@@ -1138,8 +1402,25 @@
       case "panel": togglePanel(); break;
       case "panel-close": togglePanel(false); break;
       case "copy": copyAll(); break;
-      case "clear-page": clearPage(); break;
-      case "clear-all": clearSite(); break;
+      case "clear-all": clearAll(); break;
+      case "complete-review": completeReview(); break;
+      case "history":
+        panelView = panelView === "history" ? "current" : "history";
+        renderPanel();
+        break;
+      case "review-copy": {
+        const r = byId(site.reviews || [], id);
+        if (r) {
+          writeClipboard(renderReviewExport(r));
+          toast(`Review #${r.n} copied — paste it into your AI agent`);
+        }
+        break;
+      }
+      case "review-del":
+        site.reviews = (site.reviews || []).filter((r) => r.id !== id);
+        save();
+        renderPanel();
+        break;
       case "note-save": closeNoteEditor(true); break;
       case "note-cancel": closeNoteEditor(false); break;
       case "note-edit": {
@@ -1148,10 +1429,12 @@
         if (note && el) openNoteEditor(el, note);
         break;
       }
+      case "note-copy": copyNote(id, page); break;
       case "note-done": {
         const note = byId(data.notes, id);
         if (note) {
           note.done = !note.done;
+          site.copied = false;
           save();
           renderAll();
         }
@@ -1160,6 +1443,7 @@
       case "note-del": {
         data.notes = data.notes.filter((n) => n.id !== id);
         site.pages[page || pageKey()] = data;
+        site.copied = false;
         closeViewPopup();
         save();
         renderAll();
@@ -1200,6 +1484,16 @@
       count += site.pages[k].notes.length + site.pages[k].edits.length;
     });
     $("#count").textContent = String(count);
+    // Running tally across completed reviews + current working set — the
+    // "you've shipped N changes" reminder.
+    const archived = (site.reviews || []).reduce(
+      (s, r) => s + r.notes.length + r.edits.length,
+      0,
+    );
+    const total = archived + count;
+    $("#tally").style.display = total ? "flex" : "none";
+    $("#tally-n").textContent = `${total} change${total === 1 ? "" : "s"} applied`;
+    syncFooter();
   }
 
   let repositionQueued = false;
@@ -1246,7 +1540,7 @@
 
   document.addEventListener("mousemove", onMove, { capture: true, passive: true });
   document.addEventListener("click", onClickCapture, true);
-  for (const ev of ["mousedown", "mouseup", "dblclick", "pointerdown", "contextmenu"]) {
+  for (const ev of ["mousedown", "mouseup", "dblclick", "pointerdown", "contextmenu", "auxclick"]) {
     document.addEventListener(ev, onMouseBlock, true);
   }
   document.addEventListener("keydown", onKeyCapture, true);

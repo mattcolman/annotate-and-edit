@@ -229,12 +229,82 @@ try {
     "edit makes element editable",
     await evalJs(`!!document.querySelector('.lede').getAttribute('contenteditable')`),
   );
+  // a click inside the in-progress edit must be contained — links inside an
+  // editable element would otherwise navigate away mid-edit
+  const insideClick = await evalJs(`(() => {
+    const el = document.querySelector('.lede');
+    const r = el.getBoundingClientRect();
+    window.__clk = null;
+    const delivered = el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:r.left+12, clientY:r.top+12}));
+    return { delivered, saw: window.__clk };
+  })()`);
+  check(
+    "clicks inside active edit are contained",
+    insideClick.delivered === false || insideClick.saw === null || insideClick.saw?.prevented === true,
+    JSON.stringify(insideClick),
+  );
   await evalJs(`(() => {
     document.querySelector('.lede').innerText = 'Smoke edited lede — replacement copy.';
     ${clickSel('[data-act="edit-save"]')}
   })()`);
   await sleep(300);
   check("edit badge rendered", (await evalJs(badgeCount)) >= 1);
+
+  // 4a2. cancel restores the original text and records nothing
+  const badgesBeforeCancel = await evalJs(badgeCount);
+  await evalJs(`(() => {
+    const h2 = document.querySelector('h2');
+    const r = h2.getBoundingClientRect();
+    document.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, clientX:r.left+10, clientY:r.top+10}));
+    h2.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:r.left+10, clientY:r.top+10}));
+  })()`);
+  await sleep(150);
+  await evalJs(`document.querySelector('h2').innerText = 'CANCELLED EDIT TEXT'`);
+  await evalJs(clickSel('[data-act="edit-cancel"]'));
+  await sleep(200);
+  check(
+    "cancel restores original text",
+    !(await evalJs(`document.querySelector('h2').innerText`)).includes("CANCELLED"),
+  );
+  check(
+    "cancel records no edit",
+    (await evalJs(badgeCount)) === badgesBeforeCancel,
+  );
+
+  // 4a3. mode hotkeys: a/e switch modes (ignored while typing), Esc exits
+  const key = (k, target = "document.body") =>
+    `${target}.dispatchEvent(new KeyboardEvent('keydown', {key:'${k}', bubbles:true, cancelable:true}))`;
+  await evalJs(key("a"));
+  await sleep(100);
+  check(
+    "hotkey a enables annotate",
+    await evalJs(`${SHADOW}.querySelector('[data-act="annotate"]').classList.contains('on')`),
+  );
+  await evalJs(key("e"));
+  await sleep(100);
+  check(
+    "hotkey e switches to edit",
+    await evalJs(`${SHADOW}.querySelector('[data-act="edit"]').classList.contains('on')`),
+  );
+  await evalJs(`(() => {
+    const i = document.createElement('input');
+    i.id = '__hotkeytest';
+    document.body.appendChild(i);
+    i.focus();
+  })()`);
+  await evalJs(key("a", "document.querySelector('#__hotkeytest')"));
+  await sleep(100);
+  check(
+    "hotkey ignored while typing in input",
+    await evalJs(`!${SHADOW}.querySelector('[data-act="annotate"]').classList.contains('on') && ${SHADOW}.querySelector('[data-act="edit"]').classList.contains('on')`),
+  );
+  await evalJs(`document.querySelector('#__hotkeytest').remove()`);
+  await evalJs(key("Escape"));
+  await sleep(100);
+  check(
+    "Esc exits pick mode",
+    await evalJs(`!${SHADOW}.querySelector('[data-act="edit"]').classList.contains('on')`),
+  );
 
   // 4b. markers visibility toggle hides/shows pins and badges
   await evalJs(clickSel('[data-act="marks"]'));
@@ -265,6 +335,14 @@ try {
     "toolbar clears the panel",
     (await evalJs(`${SHADOW}.querySelector('#toolbar').style.right`)) === "346px",
   );
+  check(
+    "panel header buttons stay in bounds",
+    await evalJs(`(() => {
+      const p = ${SHADOW}.querySelector('#panel').getBoundingClientRect();
+      const b = ${SHADOW}.querySelector('#panel .hbtns').getBoundingClientRect();
+      return b.right <= p.right + 0.5 && b.left >= p.left;
+    })()`),
+  );
   await evalJs(clickSel('[data-act="panel-close"]'));
   await sleep(150);
 
@@ -282,6 +360,14 @@ try {
   );
   check("toast anchored above panel footer", toastBox.right === "14px" && toastBox.bottom > 60);
   check("toast animates in", toastBox.shown);
+
+  // 5b. per-note copy button toasts and doesn't disturb the copied gate state
+  await evalJs(`${SHADOW}.querySelector('[data-act="note-copy"]').click()`);
+  await sleep(250);
+  check(
+    "note copy button toasts",
+    (await evalJs(`${SHADOW}.querySelector('#toast').textContent`)).includes("Note copied"),
+  );
   await evalJs(clickSel('[data-act="panel-close"]'));
   await sleep(150);
 
@@ -316,6 +402,68 @@ try {
   check(
     "note marker survives reload",
     (await evalJs(markerCount)) === 1,
+  );
+
+  // 8. complete review: gated until the latest changes are copied
+  await evalJs(clickSel('[data-act="panel"]'));
+  await sleep(200);
+  // dirty the working set after the earlier copy — toggling a note resolved
+  await evalJs(`${SHADOW}.querySelector('[data-act="note-done"]').click()`);
+  await sleep(250);
+  check(
+    "complete review locked before copy",
+    await evalJs(`${SHADOW}.querySelector('[data-act="complete-review"]').classList.contains('locked')`),
+  );
+  await evalJs(clickSel('[data-act="complete-review"]')); // blocked — nothing copied
+  await sleep(150);
+  await evalJs(clickSel('[data-act="copy"]'));           // copy unlocks it
+  await sleep(200);
+  check(
+    "complete review unlocked after copy",
+    !(await evalJs(`${SHADOW}.querySelector('[data-act="complete-review"]').classList.contains('locked')`)),
+  );
+  await evalJs(clickSel('[data-act="complete-review"]')); // single click archives
+  await sleep(400);
+  const stored = await evalJs(
+    `JSON.parse(localStorage.getItem('__ae_store'))['ae:' + location.origin]`,
+  );
+  check(
+    "review archived with items",
+    stored.reviews?.length === 1 &&
+      stored.reviews[0].n === 1 &&
+      stored.reviews[0].notes.length === 1 &&
+      stored.reviews[0].edits.length === 1,
+  );
+  check("working set cleared after review", Object.keys(stored.pages).length === 0);
+  check("next review numbered", stored.nextReview === 2);
+  check(
+    "header tally counts archived changes",
+    (await evalJs(`${SHADOW}.querySelector('#tally-n').textContent`)) === "2 changes applied",
+  );
+  check(
+    "copy locked when empty",
+    await evalJs(`${SHADOW}.querySelector('[data-act="copy"]').classList.contains('locked')`),
+  );
+  await evalJs(clickSel('[data-act="history"]'));
+  await sleep(200);
+  // 9. XML documents (rss feeds etc.) must not crash the content script
+  await send("Page.navigate", { url: "http://localhost:8000/feed.xml" });
+  await sleep(1200);
+  check(
+    "skips XML documents without throwing",
+    (await evalJs(`document instanceof HTMLDocument`)) === false &&
+      (await evalJs(`!!document.querySelector('annotate-edit')`)) === false,
+  );
+  await send("Page.navigate", { url: PAGE });
+  await sleep(1200);
+  await evalJs(clickSel('[data-act="panel"]'));
+  await sleep(200);
+  await evalJs(clickSel('[data-act="history"]'));
+  await sleep(200);
+
+  check(
+    "history lists completed review",
+    (await evalJs(`${SHADOW}.querySelector('#panel-body').textContent`)).includes("Review #1"),
   );
 } catch (err) {
   check("run completed", false, err.message);

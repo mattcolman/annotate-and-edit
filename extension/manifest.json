@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Annotate & Edit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Annotate any website and edit its text live, then copy a structured prompt for your AI coding agent. Free, no accounts.",
   "permissions": ["storage"],
   "background": {
