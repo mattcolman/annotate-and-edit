@@ -17,7 +17,13 @@
   window.__annotateEditLoaded = true;
   // Content scripts also run on XML feeds/SVG docs — no DOM to annotate there.
   if (!(document instanceof HTMLDocument)) return;
-
+  // Every frame handles its own DOM; only the top document owns the toolbar,
+  // panel and storage. Never infer eligibility from a frame's pixel size.
+  const isTop = window === window.top;
+  const session = {
+    get(key) { try { return sessionStorage.getItem(key); } catch { return null; } },
+    set(key, value) { try { sessionStorage.setItem(key, value); } catch {} },
+  };
   const HOST_TAG = "annotate-edit";
   const STORE_PREFIX = "ae:";
   /* Tags whose text can be rewritten inline, and the inline children allowed
@@ -40,8 +46,11 @@
      the same document always maps to one bucket of notes/edits. */
   const canonPath = (p) =>
     p.replace(/\/index\.html?$/i, "/").replace(/(.+)\/$/, "$1") || "/";
-  const pageKey = () => canonPath(location.pathname) + location.search;
+  const localPageKey = () => canonPath(location.pathname) + location.search;
+  let framePageKey = null;
+  const pageKey = () => isTop ? localPageKey() : framePageKey || localPageKey();
   const canonicalKey = (key) => {
+    if (key.startsWith("frame:")) return key;
     const i = key.indexOf("?");
     return i === -1
       ? canonPath(key)
@@ -138,7 +147,7 @@
   let mode = "off"; // 'off' | 'annotate' | 'edit'
   // Off by default — the icon click / keyboard shortcut turns it on, and the
   // state persists per tab so a review session survives navigation + reloads.
-  let toolbarVisible = sessionStorage.getItem("__ae_ui") === "1";
+  let toolbarVisible = isTop && session.get("__ae_ui") === "1";
   let panelOpen = false;
   let hoverEl = null; // element currently under the cursor (pick modes)
   let noteDraft = null; // { el, existing? } while the note editor is open
@@ -151,6 +160,7 @@
   }
 
   async function loadSite() {
+    if (!isTop) return;
     try {
       const r = await chrome.storage.local.get(storeKey());
       const v = r[storeKey()];
@@ -180,10 +190,15 @@
 
   let saveTimer = null;
   function save() {
+    if (!isTop) {
+      saveFrameChanges();
+      return;
+    }
+    publishFrames();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       try {
-        chrome.storage.local.set({ [storeKey()]: site });
+        chrome.storage.local.set({ [storeKey()]: site }).catch(() => {});
       } catch {
         /* storage unavailable — keep in-memory only */
       }
@@ -318,7 +333,9 @@
   .popup, #pill {
     position: fixed; z-index: 2147483647;
     background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px; width: 280px; box-shadow: 0 10px 32px rgba(0,0,0,.5);
+    padding: 10px; width: 280px; max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px); overflow: auto;
+    box-shadow: 0 10px 32px rgba(0,0,0,.5);
     display: none;
   }
   .popup .title { font-size: 11px; color: var(--dim); margin-bottom: 6px; }
@@ -376,7 +393,7 @@
   #panel-body { flex: 1; overflow-y: auto; padding: 10px 14px 20px; }
   #panel-body h4 {
     margin: 14px 0 6px; font-size: 11px; color: var(--dim);
-    text-transform: uppercase; letter-spacing: .06em;
+    text-transform: uppercase; letter-spacing: .06em; overflow-wrap: anywhere;
   }
   .item {
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 9px;
@@ -499,7 +516,7 @@
   // toolbar position — draggable anywhere, remembered for the session
   const pos = { right: 16, bottom: 16 };
   try {
-    Object.assign(pos, JSON.parse(sessionStorage.getItem("__ae_pos") || "{}"));
+    Object.assign(pos, JSON.parse(session.get("__ae_pos") || "{}"));
   } catch {}
   function applyPos() {
     const r = panelOpen ? Math.max(pos.right, 346) : pos.right;
@@ -532,7 +549,7 @@
     if (!drag) return;
     drag = null;
     toolbar.classList.remove("dragging");
-    sessionStorage.setItem("__ae_pos", JSON.stringify(pos));
+    session.set("__ae_pos", JSON.stringify(pos));
   });
   applyPos();
 
@@ -659,7 +676,9 @@
     if (!saveIt || !text) return;
 
     if (existing) {
-      existing.note = text;
+      const current = byId(pageData().notes, existing.id);
+      if (!current) return; // Deleted in the shared panel while this draft was open.
+      current.note = text;
     } else {
       const { prevText, nextText } = contextFor(el);
       pageData().notes.push({
@@ -716,11 +735,15 @@
 
   // ------------------------------------------------------- markers visibility
 
-  let marksVisible = sessionStorage.getItem("__ae_marks") !== "0";
+  let marksVisible = session.get("__ae_marks") !== "0";
 
-  function setMarks(v) {
+  function setMarks(v, remote = false) {
+    if (!isTop && !remote) {
+      requestTop({ action: "marks", value: v });
+      return;
+    }
     marksVisible = v;
-    sessionStorage.setItem("__ae_marks", v ? "1" : "0");
+    if (isTop) session.set("__ae_marks", v ? "1" : "0");
     overlay.style.display = v ? "" : "none";
     $("#eye-on").hidden = !v;
     $("#eye-off").hidden = v;
@@ -729,6 +752,7 @@
     btn.title = v
       ? "Hide note and edit markers"
       : "Show note and edit markers";
+    if (isTop && !remote) publishFrames();
   }
 
   // ------------------------------------------------------------ edit session
@@ -870,9 +894,19 @@
   const lastMouse = { x: 0, y: 0 };
 
   function setMode(next) {
+    if (!isTop) {
+      requestTop({ action: "mode", value: next });
+      return;
+    }
+    applyMode(mode === next ? "off" : next);
+    publishFrames();
+  }
+
+  function applyMode(next) {
+    if (mode === next) return;
     if (activeEdit) commitEdit();
     if (noteDraft) closeNoteEditor(true);
-    mode = mode === next ? "off" : next;
+    mode = next;
     hoverEl = null;
     highlight.style.display = "none";
     highlight.classList.toggle("edit", mode === "edit");
@@ -956,8 +990,8 @@
     block(e);
     if (noteDraft) closeNoteEditor(true);
     if (openView) closeViewPopup();
-    if (mode === "annotate" && hoverEl) {
-      openNoteEditor(hoverEl, null);
+    if (mode === "annotate" && e.target instanceof Element) {
+      openNoteEditor(e.target, null);
     } else if (mode === "edit") {
       const t = editableTarget(e.target);
       if (t) startEdit(t);
@@ -1080,7 +1114,7 @@
     const html = [];
     for (const key of keys) {
       const data = site.pages[key];
-      html.push(`<h4>${esc(key)}${key === pageKey() ? " · this page" : ""}</h4>`);
+      html.push(`<h4>${esc(pageLabel(key, data))}${key === pageKey() ? " · this page" : ""}</h4>`);
       data.edits.forEach((ed) => {
         const state = key === pageKey() ? editState(ed) : "applied";
         html.push(`
@@ -1125,6 +1159,7 @@
       return;
     }
     confirmClear = null;
+    resetFrames("clear");
     site.pages = {}; // history survives — only the working set is cleared
     site.copied = false;
     save();
@@ -1132,7 +1167,11 @@
     toast("Cleared all notes and edits on this site");
   }
 
-  function completeReview() {
+  async function completeReview() {
+    if (!await flushFrames()) {
+      toast("A frame is still saving — try again in a moment");
+      return;
+    }
     const keys = Object.keys(site.pages).filter(
       (k) => site.pages[k].notes.length || site.pages[k].edits.length,
     );
@@ -1157,6 +1196,7 @@
     }
     site.reviews.push(review);
     site.nextReview += 1;
+    resetFrames("archive");
     site.pages = {};
     site.copied = false; // fresh review needs a fresh copy
     save();
@@ -1170,6 +1210,19 @@
 
   function clean(t) {
     return String(t ?? "").replace(/\r/g, "").trim();
+  }
+
+  function pageLabel(key, data) {
+    const item = data?.notes?.[0] || data?.edits?.[0];
+    return item?.frameUrl ? `${item.frameUrl} (embedded in ${item.hostPage})` : key;
+  }
+
+  function frameContext(item, indent = "") {
+    return item.frameUrl ? [
+      `${indent}- **Frame URL:** ${item.frameUrl}`,
+      `${indent}- **Frame path:** ${item.framePath} (frame indexes from the outer page)`,
+      `${indent}- **Containing page:** ${item.hostPage}`,
+    ] : [];
   }
 
   function renderExport() {
@@ -1220,7 +1273,7 @@
       for (const key of keys.sort()) {
         const list = pages[key].edits;
         if (!list.length) continue;
-        lines.push(`### Page: ${key}`, "");
+        lines.push(`### Page: ${pageLabel(key, pages[key])}`, "");
         list.forEach((ed, i) => {
           const stale = key === pageKey() && editState(ed) === "stale";
           lines.push(
@@ -1229,6 +1282,7 @@
             `   - **From:** "${clean(ed.oldText)}"`,
             `   - **To:** "${clean(ed.newText)}"`,
             `   - **Selector:** \`${ed.selector}\``,
+            ...frameContext(ed, "   "),
           );
           const ctx = [];
           if (ed.prevText) ctx.push(`after "${clean(ed.prevText).slice(0, 80)}"`);
@@ -1243,7 +1297,7 @@
     if (openKeys.length) {
       lines.push("## Annotations", "");
       for (const key of openKeys.sort()) {
-        lines.push(`### Page: ${key}`, "");
+        lines.push(`### Page: ${pageLabel(key, pages[key])}`, "");
         pages[key].notes.forEach((n, i) => {
           if (n.done) return;
           const [first, ...rest] = clean(n.note).split("\n");
@@ -1252,6 +1306,7 @@
           if (body) lines.push(`   ${body}`, "");
           lines.push(`   - **Element:** \`<${n.tag}>\`${n.text ? ` "${clean(n.text).slice(0, 120)}"` : ""}`);
           lines.push(`   - **Selector:** \`${n.selector}\``);
+          lines.push(...frameContext(n, "   "));
           const nctx = [];
           if (n.prevText) nctx.push(`after "${clean(n.prevText).slice(0, 80)}"`);
           if (n.nextText) nctx.push(`before "${clean(n.nextText).slice(0, 80)}"`);
@@ -1281,13 +1336,14 @@
     const n = byId(pageData(key).notes, id);
     if (!n) return;
     const [first, ...rest] = clean(n.note).split("\n");
-    const lines = [`### Annotation — ${key}`, "", first];
+    const lines = [`### Annotation — ${pageLabel(key, { notes: [n] })}`, "", first];
     const body = rest.join("\n").trim();
     if (body) lines.push("", body);
     lines.push(
       "",
       `- **Element:** \`<${n.tag}>\`${n.text ? ` "${clean(n.text).slice(0, 120)}"` : ""}`,
       `- **Selector:** \`${n.selector}\``,
+      ...frameContext(n),
     );
     const ctx = [];
     if (n.prevText) ctx.push(`after "${clean(n.prevText).slice(0, 80)}"`);
@@ -1372,6 +1428,10 @@
   }
 
   async function copyAll() {
+    if (!await flushFrames()) {
+      toast("A frame is still saving — try again in a moment");
+      return;
+    }
     const empty = !Object.values(site.pages).some(
       (p) => p.notes.length || p.edits.length,
     );
@@ -1493,12 +1553,266 @@
     }
   });
 
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg?.type === "ae:toggle") {
+  // ----------------------------------------------------- frame coordination
+  // The top document is the only writer to chrome.storage. Children send
+  // item-level changes, not whole-site snapshots, so concurrent frame saves
+  // cannot overwrite one another. A child receives only its own page's data.
+  const frames = new Map();
+  let revision = 0;
+  let epoch = uid();
+  let resetReason = "";
+  let finishReady;
+  const ready = new Promise((resolve) => { finishReady = resolve; });
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const emptyPage = () => ({ notes: [], edits: [] });
+  let baseline = emptyPage();
+  let frameRevision = -1;
+  let frameEpoch = null;
+  let pendingPatches = [];
+  let draining = null;
+  let retryTimer = null;
+  let connecting = false;
+
+  async function relay(message) {
+    try { return await chrome.runtime.sendMessage(message); }
+    catch { return { unavailable: true }; }
+  }
+
+  function sendFrame(entry, message) {
+    return relay({ type: "ae:frame-send", documentId: entry.documentId, message });
+  }
+
+  function stateFor(entry) {
+    return {
+      type: "ae:frame-state", revision, epoch, resetReason,
+      visible: toolbarVisible, mode, marks: marksVisible,
+      page: entry.key, data: site.pages[entry.key] || emptyPage(),
+    };
+  }
+
+  function publishFrames() {
+    if (!isTop) return;
+    revision++;
+    for (const entry of frames.values()) {
+      sendFrame(entry, stateFor(entry)).then((reply) => {
+        if (reply?.unavailable && frames.get(entry.documentId) === entry) {
+          frames.delete(entry.documentId);
+        }
+      });
+    }
+  }
+
+  function resetFrames(reason) {
+    epoch = uid();
+    resetReason = reason;
+    for (const entry of frames.values()) entry.seen.clear();
+  }
+
+  // WindowProxy frame indexes are readable across origins. No child DOM or
+  // parent location is accessed. The path distinguishes duplicate frame URLs.
+  function framePath() {
+    const path = [];
+    for (let child = window; child !== child.top; child = child.parent) {
+      const parent = child.parent;
+      let index = 0;
+      while (index < parent.length && parent[index] !== child) index++;
+      path.unshift(index);
+    }
+    return path.join("/");
+  }
+
+  async function handleFrameRequest(msg) {
+    await ready;
+    const request = msg.request || {};
+    let entry = frames.get(msg.documentId);
+    if (request.action === "hello") {
+      if (!msg.documentId || !/^\d+(\/\d+)*$/.test(request.path)) return;
+      // MessageSender.url can retain the document's original URL after a
+      // same-document navigation. Accept the content script's current route
+      // only within that verified origin (history cannot change origins).
+      const sourceUrl = new URL(msg.url);
+      const currentUrl = new URL(request.url || msg.url);
+      const url = currentUrl.origin === sourceUrl.origin ? currentUrl : sourceUrl;
+      url.hash = "";
+      const frameUrl = url.href;
+      const key = "frame:" + JSON.stringify([localPageKey(), request.path, frameUrl]);
+      entry = { documentId: msg.documentId, key, seen: new Set(),
+        metadata: { frameUrl, framePath: request.path,
+          hostPage: location.origin + localPageKey() } };
+      frames.set(msg.documentId, entry);
+    }
+    if (!entry) return { reconnect: true };
+    if (request.action === "patch" && request.epoch === epoch && request.page === entry.key) {
+      if (!entry.seen.has(request.id)) {
+        const data = pageData(entry.key);
+        applyPatch(data, request.changes, entry.metadata);
+        entry.seen.add(request.id);
+        site.copied = false;
+        save();
+        renderAll();
+      }
+    } else if (request.action === "mode" && ["off", "annotate", "edit"].includes(request.value)) {
+      setMode(request.value);
+    } else if (request.action === "marks" && typeof request.value === "boolean") {
+      setMarks(request.value);
+    }
+    return stateFor(entry);
+  }
+
+  function applyPatch(data, changes, metadata = {}) {
+    for (const kind of ["notes", "edits"]) {
+      const change = changes?.[kind];
+      if (!change) continue;
+      const removed = new Set(change.remove || []);
+      const upserts = new Map((change.upsert || []).map((item) => [item.id, { ...item, ...metadata }]));
+      data[kind] = data[kind].filter((item) => !removed.has(item.id)).map((item) => {
+        const next = upserts.get(item.id) || item;
+        upserts.delete(item.id);
+        return next;
+      });
+      data[kind].push(...upserts.values());
+    }
+  }
+
+  function saveFrameChanges() {
+    if (!framePageKey) return;
+    const data = pageData();
+    const changes = {};
+    for (const kind of ["notes", "edits"]) {
+      const previous = new Map(baseline[kind].map((item) => [item.id, item]));
+      const current = new Set(data[kind].map((item) => item.id));
+      const upsert = data[kind].filter((item) => JSON.stringify(item) !== JSON.stringify(previous.get(item.id)));
+      const remove = baseline[kind].filter((item) => !current.has(item.id)).map((item) => item.id);
+      if (upsert.length || remove.length) changes[kind] = { upsert: clone(upsert), remove };
+    }
+    if (!Object.keys(changes).length) return;
+    pendingPatches.push({ action: "patch", id: uid(), epoch: frameEpoch,
+      page: framePageKey, changes });
+    baseline = clone(data);
+    drainPatches();
+  }
+
+  function drainPatches() {
+    if (draining) return draining;
+    draining = (async () => {
+      while (pendingPatches.length) {
+        const patch = pendingPatches[0];
+        const response = await relay({ type: "ae:frame-request", request: patch });
+        if (!response || response.unavailable || response.reconnect) {
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => response?.reconnect ? connectFrame() : drainPatches(), 1000);
+          return false;
+        }
+        pendingPatches = pendingPatches.filter((p) => p !== patch);
+        receiveFrameState(response);
+      }
+      return true;
+    })().finally(() => { draining = null; });
+    return draining;
+  }
+
+  function restoreRemovedEdits(before, after) {
+    const remaining = new Set(after.edits.map((item) => item.id));
+    for (const edit of [...before.edits].reverse()) {
+      if (remaining.has(edit.id)) continue;
+      const hit = locateEdit(edit);
+      if (hit?.at === "new") {
+        if (edit.oldHTML != null) hit.el.innerHTML = edit.oldHTML;
+        else hit.el.innerText = edit.oldText;
+      }
+    }
+  }
+
+  function receiveFrameState(state) {
+    if (state?.type !== "ae:frame-state" || state.revision < frameRevision) return;
+    const samePage = state.page === framePageKey;
+    const reset = frameEpoch !== null && state.epoch !== frameEpoch;
+    if (!samePage || reset) {
+      closeNoteEditor(false);
+      teardownEdit(true);
+      closeViewPopup();
+      pendingPatches = [];
+    }
+    const before = framePageKey ? pageData() : emptyPage();
+    frameRevision = state.revision;
+    frameEpoch = state.epoch;
+    framePageKey = state.page;
+    const data = clone(state.data);
+    for (const patch of pendingPatches) applyPatch(data, patch.changes);
+    if (!(reset && state.resetReason === "archive")) restoreRemovedEdits(before, data);
+    site.pages = { [framePageKey]: data };
+    if (openView && !byId(data[openView.kind === "note" ? "notes" : "edits"], openView.item.id)) closeViewPopup();
+    if (noteDraft?.existing && !byId(data.notes, noteDraft.existing.id)) closeNoteEditor(false);
+    baseline = clone(data);
+    toolbarVisible = state.visible;
+    host.style.display = toolbarVisible ? "contents" : "none";
+    setMarks(state.marks, true);
+    applyMode(toolbarVisible ? state.mode : "off");
+    if (!toolbarVisible) closeViewPopup();
+    applyEdits();
+    renderAll();
+  }
+
+  async function requestTop(request) {
+    const response = await relay({ type: "ae:frame-request", request });
+    if (response?.reconnect) connectFrame();
+    else receiveFrameState(response);
+  }
+
+  async function connectFrame() {
+    if (isTop || connecting) return;
+    connecting = true;
+    const response = await relay({ type: "ae:frame-request", request: {
+      action: "hello", path: framePath(), url: location.href,
+    } });
+    connecting = false;
+    if (!response || response.unavailable) {
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(connectFrame, 1000);
+      return;
+    }
+    receiveFrameState(response);
+    drainPatches();
+  }
+
+  async function flushFrames() {
+    if (!isTop) return true;
+    if (activeEdit) commitEdit();
+    if (noteDraft) closeNoteEditor(true);
+    const replies = await Promise.all([...frames.values()].map(async (entry) => {
+      let timeout;
+      const reply = await Promise.race([
+        sendFrame(entry, { type: "ae:flush" }),
+        new Promise((resolve) => { timeout = setTimeout(() => resolve({ saved: false }), 3000); }),
+      ]);
+      clearTimeout(timeout);
+      return reply;
+    }));
+    return !replies.some((reply) => reply?.saved === false);
+  }
+
+  chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+    if (sender.id !== chrome.runtime.id) return;
+    if (isTop && msg?.type === "ae:frame-request") {
+      handleFrameRequest(msg).then(respond, () => respond({ unavailable: true }));
+      return true;
+    }
+    if (isTop && msg?.type === "ae:toggle") {
       toolbarVisible = !toolbarVisible;
-      sessionStorage.setItem("__ae_ui", toolbarVisible ? "1" : "0");
-      if (!toolbarVisible && mode !== "off") setMode(mode); // drop pick mode so clicks work again
+      session.set("__ae_ui", toolbarVisible ? "1" : "0");
+      if (!toolbarVisible) applyMode("off");
       host.style.display = toolbarVisible ? "contents" : "none";
+      publishFrames();
+    } else if (!isTop && msg?.type === "ae:frame-state") {
+      receiveFrameState(msg);
+      respond({ ok: true });
+    } else if (!isTop && msg?.type === "ae:hello") {
+      ready.then(connectFrame);
+    } else if (!isTop && msg?.type === "ae:flush") {
+      if (activeEdit) commitEdit();
+      if (noteDraft) closeNoteEditor(true);
+      drainPatches().then((saved) => respond({ saved }));
+      return true;
     }
   });
 
@@ -1547,17 +1861,28 @@
   });
 
   /* SPA navigation: re-key storage to the new path and reapply everything. */
-  let lastKey = pageKey();
+  let lastKey = localPageKey();
   function onNav() {
+    if (localPageKey() === lastKey) return;
     setTimeout(() => {
-      if (pageKey() === lastKey) return;
-      lastKey = pageKey();
+      if (localPageKey() === lastKey) return;
+      lastKey = localPageKey();
+      closeNoteEditor(false);
+      teardownEdit(true);
       closeViewPopup();
+      if (!isTop) { connectFrame(); return; }
+      frames.clear();
+      relay({ type: "ae:discover" });
       applyEdits();
       renderAll();
     }, 0);
   }
   addEventListener("popstate", onNav);
+  window.navigation?.addEventListener("navigatesuccess", onNav);
+  // The site's history methods live in a different JS world, and Navigation
+  // API events are not available in every content-script context. This cheap
+  // URL comparison also catches pushState routes that don't mutate the DOM.
+  setInterval(onNav, 500);
   for (const m of ["pushState", "replaceState"]) {
     const orig = history[m];
     history[m] = function (...args) {
@@ -1585,8 +1910,12 @@
   // ---- init
   function init() {
     document.documentElement.appendChild(host);
-    setMarks(marksVisible);
+    if (!isTop) toolbar.style.display = "none";
+    setMarks(marksVisible, true);
     loadSite().then(() => {
+      finishReady();
+      if (isTop) relay({ type: "ae:discover" });
+      else connectFrame();
       applyEdits();
       renderAll();
       // A few extra passes for client-hydrated pages.

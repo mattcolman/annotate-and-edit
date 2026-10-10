@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Frame host — preview wrapper demo</title></head>
+<body style="margin:0">
+  <!-- One shared toolbar must control both the preview and the small embed. -->
+  <div style="height:36px;background:#111;color:#eee;font:12px system-ui;display:flex;align-items:center;padding:0 12px">Preview wrapper</div>
+  <iframe id="app" name="app" src="/index.html" style="width:100vw;height:calc(100vh - 36px);border:0;display:block"></iframe>
+  <iframe id="embed" name="embed" src="/work.html" style="position:fixed;left:8px;top:44px;width:120px;height:80px;border:0"></iframe>
+</body>
+</html>

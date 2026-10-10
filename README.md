@@ -56,7 +56,8 @@ the agent can locate and apply each one without a follow-up call.
 - No screenshot capture in v1 (possible later via `chrome.tabs.captureVisibleTab`).
 - No style/layout editing (colors, spacing). Text edits only; anything else is
   expressed as an annotation.
-- No iframe or shadow-DOM traversal into third-party widgets.
+- No traversal into website shadow DOM. Iframes are supported through a
+  separate extension content script in each eligible document.
 
 ## Feature spec
 
@@ -166,6 +167,19 @@ Tailwind repo.
 - **Manifest V3**, plain content script + vendored assets; no framework needed
   for the toolbar UI, no build step beyond bundling the content script.
 - **Storage:** `chrome.storage.local`, keyed per origin; panel shows all pages.
+- **Iframes:** one toolbar and review panel live in the top document. The
+  background worker routes mode changes and saved feedback between content
+  scripts, including cross-origin, nested, narrow and dynamically loaded
+  frames. Highlights and editing stay inside each frame. No minimum size or
+  additional permissions are required. Chrome must allow the extension to run
+  on the frame's URL; browser-internal pages remain excluded.
+- **Frame persistence:** the top document alone writes the review, under the
+  containing site's origin. Each embedded page is keyed by containing page,
+  frame URL and its chain of frame indexes, so two copies of the same URL do
+  not share edits. If a site reorders its frames, old feedback remains in the
+  panel/export but may no longer reattach. Exports include the frame URL,
+  containing page and frame path alongside the element selector. Reviews from
+  the earlier independent-frame prototype are not automatically migrated.
 - **Edit re-application:** on `DOMContentLoaded` apply stored edits whose
   selector + oldText still match; re-try briefly for client-hydrated pages, and
   use a `MutationObserver` or settle-timer for SPA navigations
@@ -196,13 +210,18 @@ Tailwind repo.
   - `manifest.json` — content script on `http(s)://*`, `Cmd/Ctrl+Shift+.` command.
   - `content.js` — everything: shadow-root toolbar, annotate/edit modes,
     `chrome.storage.local` persistence per origin+path, markdown export.
-  - `background.js` — forwards icon clicks and the keyboard shortcut to the tab.
+  - `background.js` — routes icon/shortcut requests to the top frame and relays
+    frame messages using Chrome-provided tab and document identities.
 - `tools/gen_icons.py` — regenerates `extension/icons/` (stdlib-only Python).
-- `tools/smoke.mjs` — headless Chrome/CDP smoke test covering annotate, edit,
-  click interception and reload persistence. Branded Chrome ≥137 ignores
-  `--load-extension`, so it injects `content.js` via
-  `Page.addScriptToEvaluateOnNewDocument` with a `chrome.storage` stub.
-  Requires the demo server on :8000.
+- `tools/smoke.mjs` — headless browser checks for annotation, editing,
+  persistence, shared iframe controls, concurrent saves and combined export.
+  Serve `demo/` on **both :8000 and :8001** to exercise cross-origin frames.
+  The default uses a test-only Chrome API shim with the real background
+  routing code. To verify actual manifest injection and Chrome messaging,
+  run `AE_REAL_EXTENSION=1 AE_CHROME="/path/to/Chrome for Testing" node tools/smoke.mjs`.
+  Standard branded Chrome cannot load unpacked extensions using these flags.
+- `tools/background.test.mjs` — `node --test tools/background.test.mjs` checks
+  that frame messages cannot escape their tab or spoof Chrome's identities.
 - `demo/` — standalone multi-page site for manual testing.
 
 ### Load & test
