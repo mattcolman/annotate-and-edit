@@ -238,3 +238,7 @@ Tailwind repo.
 Edits store both the rendered HTML (for faithful re-application) and normalized
 plain text (for the export). The agent-facing prompt format is documented in
 "Export format" above.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Free for anyone to use.
