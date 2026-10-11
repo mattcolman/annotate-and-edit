@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — Recover missing toolbars
+
+- The icon and keyboard shortcut load the content script on demand when it is
+  absent, then explicitly open the toolbar. This uses temporary `activeTab`
+  access and `scripting`; browser restrictions still apply.
+- Reattach the existing toolbar if a page renderer removes it.
+- Show **!** on the extension icon and explain the failure in its tooltip when
+  the browser cannot start the toolbar, instead of silently ignoring the click.
+- Add a real-extension startup test that disables automatic injection and
+  exercises recovery with actual icon clicks, without extra host permissions.
+
 ## 0.4.0 — Annotate inside iframes
 
 The headline fix: **the extension now works on sites embedded in iframes** —

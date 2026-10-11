@@ -84,7 +84,7 @@
     };
     window.__aeBackgroundChrome = {
       runtime: { id, onMessage: event(backgroundListeners) },
-      action: { onClicked: event(actionListeners) },
+      action: { onClicked: event(actionListeners), setBadgeText: async () => {}, setTitle: async () => {} },
       commands: { onCommand: event([]) },
       tabs: {
         query: async () => [{ id: 1 }],

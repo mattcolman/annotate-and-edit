@@ -1797,12 +1797,17 @@
       handleFrameRequest(msg).then(respond, () => respond({ unavailable: true }));
       return true;
     }
-    if (isTop && msg?.type === "ae:toggle") {
-      toolbarVisible = !toolbarVisible;
+    if (isTop && (msg?.type === "ae:toggle" || msg?.type === "ae:show")) {
+      // Some page renderers remove nodes outside their own document tree.
+      // Reattach the existing UI, preserving its notes and event handlers.
+      const detached = !host.isConnected;
+      if (detached) document.documentElement.appendChild(host);
+      toolbarVisible = msg.type === "ae:show" || detached || !toolbarVisible;
       session.set("__ae_ui", toolbarVisible ? "1" : "0");
       if (!toolbarVisible) applyMode("off");
       host.style.display = toolbarVisible ? "contents" : "none";
       publishFrames();
+      respond({ ok: true });
     } else if (!isTop && msg?.type === "ae:frame-state") {
       receiveFrameState(msg);
       respond({ ok: true });
@@ -1898,6 +1903,13 @@
     document.addEventListener(ev, onMouseBlock, true);
   }
   document.addEventListener("keydown", onKeyCapture, true);
+  // Keystrokes typed into our UI are composed events — they'd bubble out of
+  // the shadow root and fire page shortcuts (GitHub's "e" jumps, etc.).
+  // Stop them at the host on the bubble path; our own capture-phase document
+  // handler and the shadow listeners still run normally.
+  for (const ev of ["keydown", "keypress", "keyup", "input", "beforeinput"]) {
+    host.addEventListener(ev, (e) => e.stopPropagation());
+  }
   document.addEventListener("scroll", scheduleReposition, {
     capture: true,
     passive: true,

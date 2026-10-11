@@ -233,6 +233,14 @@ try {
     "note editor opens on pick",
     await evalJs(`${SHADOW}.querySelector('#note-popup').style.display === 'block'`),
   );
+  // keystrokes in our shadow inputs must not reach page-level shortcut handlers
+  await evalJs(`window.__leaks = 0; document.addEventListener('keydown', () => window.__leaks++);`);
+  await evalJs(`${SHADOW}.querySelector('#note-text').dispatchEvent(new KeyboardEvent('keydown', {key:'e', bubbles:true, composed:true}))`);
+  await sleep(100);
+  check(
+    "keystrokes don't leak to page shortcuts",
+    (await evalJs(`window.__leaks`)) === 0,
+  );
   await evalJs(`(() => {
     ${SHADOW}.querySelector('#note-text').value = 'Smoke test note on the heading';
     ${clickSel('[data-act="note-save"]')}
